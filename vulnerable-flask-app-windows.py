@@ -1,13 +1,44 @@
 from flask import Flask,jsonify,render_template_string,request,Response,render_template
-import subprocess
+import re
+import json
+import socket
+from pathlib import Path
 from werkzeug.datastructures import Headers
 from werkzeug.utils import secure_filename
+from werkzeug.serving import WSGIRequestHandler
 import sqlite3
+
+WSGIRequestHandler.server_version = "Servidor"
+WSGIRequestHandler.sys_version = ""
 
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER']="C:\\upload"
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1000 * 1000
+
+@app.after_request
+def agregar_cabeceras_seguridad(response):
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
+def validar_hostname(hostname):
+    patron = r"^[A-Za-z0-9.-]{1,253}$"
+    return bool(re.fullmatch(patron, hostname)) and ".." not in hostname
 
 @app.route("/")
 def main_page():
@@ -17,7 +48,7 @@ def main_page():
 def search_user(name):
     con = sqlite3.connect("test.db")
     cur = con.cursor()
-    cur.execute("select * from test where username = '%s'" % name)
+    cur.execute("select * from test where username = ?", (name,))
     data = str(cur.fetchall())
     con.close()
     import logging
@@ -54,9 +85,14 @@ def hello_ssti():
 def get_users():
     try:
         hostname = request.args.get('hostname')
-        command = "nslookup " + hostname
-        data = subprocess.check_output(command, shell=True)
+        
+        log_path = Path("restapi.log")
+        
+        if not log_path.exists():
+            return "Archivo de log no encontrado", 404
+        data = log_path.read_text(encoding="utf-8", errors="replace")
         return data
+        
     except:
         data = str(hostname) + " username didn't found"
         return data
@@ -64,8 +100,12 @@ def get_users():
 @app.route("/get_log/")
 def get_log():
     try:
-        command="cat restapi.log"
-        data=subprocess.check_output(command,shell=True)
+        log_path = Path("restapi.log")
+
+        if not log_path.exists():
+            return "Archivo de log no encontrado", 404
+
+        data = log_path.read_text(encoding="utf-8", errors="replace")
         return data
     except:
         return jsonify(data="Command didn't run"), 200
@@ -85,8 +125,8 @@ def read_file():
 @app.route("/deserialization/")
 def deserialization():
     try:
-        import socket, pickle
-        HOST = "0.0.0.0"
+        import socket, json
+        HOST = "127.0.0.1"
         PORT = 8001
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind((HOST, PORT))
@@ -94,7 +134,7 @@ def deserialization():
             connection, address = s.accept()
             with connection:
                 received_data = connection.recv(1024)
-                data=pickle.loads(received_data)
+                data = json.loads(received_data.decode("utf-8"))
                 return str(data)
     except:
         return jsonify(data="You must connect 8001 port"), 200
@@ -115,9 +155,7 @@ def get_admin_mail(control):
 def run_file():
     try:
         filename=request.args.get("filename")
-        command="cmd /c "+filename
-        data=subprocess.check_output(command,shell=True)
-        return data
+        return "Por seguridad, la aplicación no ejecuta archivos recibidos del usuario.", 400
     except:
         return jsonify(data="File failed to run"), 200
 
@@ -225,4 +263,4 @@ def uploadfile():
 
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0",port=8081)
+    app.run(host="127.0.0.1", port=8081, debug=False)
